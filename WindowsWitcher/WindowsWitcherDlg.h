@@ -7,7 +7,7 @@
 // CWindowsWitcherDlg dialog
 class CWindowsWitcherDlg : public CDialogEx
 {
-// Construction
+	// Construction
 public:
 	CWindowsWitcherDlg(CWnd* pParent = NULL);	// standard constructor
 
@@ -18,7 +18,6 @@ public:
 
 	protected:
 	virtual void DoDataExchange(CDataExchange* pDX);	// DDX/DDV support
-
 
 // Implementation
 protected:
@@ -33,23 +32,25 @@ protected:
 		int counter = 0;
 		ULONGLONG timer = 0;
 	};
-	std::map<int, Group> groups;
+	std::map<LONG, Group> groups;
 
-	bool ctrl_is_down;
-	bool shift_is_down;
-	int foreground_group;
-	std::vector<CWnd*> foreground_group_windows;
+	bool ctrlDown;
+	bool shiftDown;
+	LONG foregroundGroup;
+	std::vector<CWnd*> foregroundGroupWindows;
 
 	// Generated message map functions
 	virtual BOOL OnInitDialog();
 	afx_msg void OnPaint();
 	afx_msg HCURSOR OnQueryDragIcon();
-	DECLARE_MESSAGE_MAP()
-	BOOL SetRawInput(HWND hWnd);
-	VOID RawInput(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
-	VOID HandleKeyInput(RAWKEYBOARD rawKB);
-	BOOL PreTranslateMessage(MSG* pMsg);
 	afx_msg void OnTimer(UINT_PTR nIDEvent);
-	VOID PrintMessage(CString msg);
+	afx_msg LRESULT OnKeyInput(WPARAM wParam, LPARAM lParam);
+	DECLARE_MESSAGE_MAP()
+
+	template<typename... T>
+	VOID PrintMessage(const CString &format, T&&... args);
 	BOOL IsAccepedWindow(CWnd* window);
+	DWORD GetKeyNameCode(LPARAM lParam);
+	CString GetKeyName(LONG keyNameCode);
+	CString GetCustomKeyName(LONG keyNameCode);
 };

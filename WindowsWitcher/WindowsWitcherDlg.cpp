@@ -7,6 +7,8 @@
 #include "WindowsWitcherDlg.h"
 #include "afxdialogex.h"
 
+#include "Hook.h"
+
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
@@ -33,6 +35,8 @@ void CWindowsWitcherDlg::DoDataExchange(CDataExchange* pDX)
 BEGIN_MESSAGE_MAP(CWindowsWitcherDlg, CDialogEx)
 	ON_WM_PAINT()
 	ON_WM_QUERYDRAGICON()
+	ON_WM_TIMER()
+	ON_MESSAGE(WM_KEYINPUT, OnKeyInput)
 END_MESSAGE_MAP()
 
 
@@ -48,19 +52,23 @@ BOOL CWindowsWitcherDlg::OnInitDialog()
 	SetIcon(m_hIcon, FALSE);		// Set small icon
 
 	// TODO: Add extra initialization here
-	ctrl_is_down = false;
-	shift_is_down = false;
-	foreground_group = -1;
-	for (int i = 0; i < 12; i++) {
-		CString kn;
-		kn.Format(L"F%d", i + 13);
-		m_KeysList.AddString(kn);
+	ctrlDown = false;
+	shiftDown = false;
+	foregroundGroup = -1;
+
+	groups[0x4F0000]; // num 1
+	groups[0x500000]; // num 2
+	groups[0x510000]; // num 3
+
+	for (auto &g : groups) {
+		m_KeysList.AddString(GetCustomKeyName(g.first));
 	}
 	m_KeysList.SetCurSel(0);
 	SetTimer(0, 50, NULL);
-	if (!SetRawInput(m_hWnd)) {
-		AfxMessageBox(L"Fail to Rigister Raw Input");
-		exit(0);
+
+	if (!SetLowLevelKeyboardHook(TRUE, m_hWnd))
+	{
+		PrintMessage(L"Fail to Set Hook!");
 	}
 
 	return TRUE;  // return TRUE  unless you set the focus to a control
@@ -102,61 +110,106 @@ HCURSOR CWindowsWitcherDlg::OnQueryDragIcon()
 	return static_cast<HCURSOR>(m_hIcon);
 }
 
-VOID CWindowsWitcherDlg::HandleKeyInput(RAWKEYBOARD rawKB) {
-	auto vkCode = rawKB.VKey;
-	auto scanCode = rawKB.MakeCode;
-	auto flags = rawKB.Flags;
-	auto message = rawKB.Message;
-	bool down = flags % 2 == 0;
-
-	if (scanCode == 29) {
-		ctrl_is_down = down;
-	}
-	if (scanCode == 42 || scanCode == 54) {
-		shift_is_down = down;
-	}
-
-	if (scanCode < 100 || scanCode >= 112) {
-		return;
-	}
-
-	CString key_name;
-	key_name.Format(L"F%d", scanCode - 87);
-	CString msg;
-	auto &group = groups[scanCode];
-	auto &windows = group.windows;
-	if (ctrl_is_down || shift_is_down) {
-		if (down) {
-			if (ctrl_is_down) {
-				windows.clear();
-				msg.Format(L"Clear\t%s\r\n", key_name);
-				PrintMessage(msg);
+void CWindowsWitcherDlg::OnTimer(UINT_PTR nIDEvent)
+{
+	if (nIDEvent == 0) {
+		for (auto &gp : groups) {
+			auto &windows = gp.second.windows;
+			for (int i = 0; i < (int) windows.size(); i++) {
+				if (!IsWindow(windows[i]->m_hWnd)) {
+					windows.erase(windows.begin() + i);
+					i--;
+				}
 			}
-			if (shift_is_down) {
+		}
+
+		auto fw = GetForegroundWindow();
+		if (IsAccepedWindow(fw) && foregroundGroup != -1 && !foregroundGroupWindows.empty()) {
+			auto &fgw = foregroundGroupWindows;
+			for (int i = 0; i < (int) fgw.size() - 1; i++) {
+				if (fgw[i] == fw) {
+					std::swap(fgw[i], fgw[i + 1]);
+				}
+			}
+			if (fgw.back() != fw) {
+				foregroundGroup = -1;
+				foregroundGroupWindows.resize(1);
+			}
+		}
+
+		CString cur_text;
+		CString new_text;
+		m_WindowsEdit.GetWindowText(cur_text);
+		auto it = groups.begin();
+		std::advance(it, m_KeysList.GetCurSel());
+		int key = it->first;
+		for (int i = 0; i < (int) groups[key].windows.size(); i++) {
+			CString title;
+			groups[key].windows[i]->GetWindowText(title);
+			new_text.Append(title + L"\r\n");
+		}
+		if (cur_text != new_text) {
+			m_WindowsEdit.SetWindowText(new_text);
+		}
+	}
+	CDialogEx::OnTimer(nIDEvent);
+}
+
+LRESULT CWindowsWitcherDlg::OnKeyInput(WPARAM wParam, LPARAM lParam) {
+	DWORD flags = lParam >> 24;
+	DWORD scanCode = (lParam >> 16) & 0xFF;
+	DWORD keyNameCode = GetKeyNameCode(lParam);
+	CString keyName = GetKeyName(keyNameCode);
+	BOOL keyDown = !(flags & KF_UP);
+	//PrintMessage(L"%s\t| keyNameCode: %x\t| %s\r\n",
+	//	keyDown ? L"Down" : L"Up", keyNameCode, keyName);
+
+	// Ctrl
+	if (scanCode == 29) {
+		ctrlDown = keyDown;
+		return 0;
+	}
+	// Shift
+	if (scanCode == 42 || scanCode == 54) {
+		shiftDown = keyDown;
+		return 0;
+	}
+	if (groups.find(keyNameCode) == groups.end()) {
+		return 0;
+	}
+
+	auto &group = groups[keyNameCode];
+	auto &windows = group.windows;
+	if (ctrlDown || shiftDown) {
+		if (keyDown) {
+			if (ctrlDown) {
+				windows.clear();
+				PrintMessage(L"Clear\t%s\r\n", keyName);
+			}
+			if (shiftDown) {
 				auto w = GetForegroundWindow();
 				if (IsAccepedWindow(w)) {
 					CString tmp;
-					w->GetWindowTextW(tmp);
+					w->GetWindowText(tmp);
 					if (std::find(windows.begin(), windows.end(), w) == windows.end()) {
 						windows.push_back(w);
-						msg.Format(L"Push\t%s : %s\r\n", key_name, tmp);
+						PrintMessage(L"Push\t%s : %s\r\n", keyName, tmp);
 					}
 					else {
-						msg.Format(L"Exists\t%s : %s\r\n", key_name, tmp);
+						PrintMessage(L"Exists\t%s : %s\r\n", keyName, tmp);
 					}
-					PrintMessage(msg);
 				}
 			}
 		}
 	}
 	else {
-		if (down) {
+		if (keyDown) {
 			if (group.counter == 0) {
-				if (foreground_group == scanCode) {
-					for (auto w : foreground_group_windows) {
+				if (foregroundGroup == keyNameCode) {
+					for (auto w : foregroundGroupWindows) {
 						w->ShowWindow(SW_MINIMIZE);
 					}
-					foreground_group = -1;
+					foregroundGroup = -1;
 					group.counter = 3;
 				}
 				else {
@@ -175,8 +228,7 @@ VOID CWindowsWitcherDlg::HandleKeyInput(RAWKEYBOARD rawKB) {
 					group.counter = 1;
 					group.timer = GetTickCount64();
 				}
-				msg.Format(L"%s down\r\n", key_name);
-				PrintMessage(msg);
+				PrintMessage(L"%s keyDown\r\n", keyName);
 			}
 		}
 		else {
@@ -186,7 +238,7 @@ VOID CWindowsWitcherDlg::HandleKeyInput(RAWKEYBOARD rawKB) {
 					w->SetWindowPos(&wndNoTopMost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 				}
 				if (GetTickCount64() - group.timer < 500) {
-					foreground_group_windows.clear();
+					foregroundGroupWindows.clear();
 					for (int i = windows.size() - 1; i >= 0; i--) {
 						auto w = windows[i];
 						if (i == 0) {
@@ -194,14 +246,14 @@ VOID CWindowsWitcherDlg::HandleKeyInput(RAWKEYBOARD rawKB) {
 								w->SetForegroundWindow();
 							}
 						}
-						foreground_group_windows.push_back(w);
+						foregroundGroupWindows.push_back(w);
 					}
-					foreground_group = scanCode;
-					msg.Format(L"%s Up\r\n", key_name);
+					foregroundGroup = keyNameCode;
+					PrintMessage(L"%s Up\r\n", keyName);
 				}
 				else {
-					if (foreground_group != -1) {
-						auto &fgw = foreground_group_windows;
+					if (foregroundGroup != -1) {
+						auto &fgw = foregroundGroupWindows;
 						for (auto w : fgw) {
 							w->SetWindowPos(&wndTopMost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 							w->SetWindowPos(&wndNoTopMost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -214,101 +266,45 @@ VOID CWindowsWitcherDlg::HandleKeyInput(RAWKEYBOARD rawKB) {
 							fw->SetWindowPos(&wndNoTopMost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 						}
 					}
-					msg.Format(L"%s Long Up\r\n", key_name);
+					PrintMessage(L"%s Long Up\r\n", keyName);
 				}
 			}
 			group.counter = 0;
-			PrintMessage(msg);
 		}
 	}
+	return 0;
 }
 
-BOOL CWindowsWitcherDlg::SetRawInput(HWND hWnd) {
-	RAWINPUTDEVICE Rid;
-	Rid.usUsagePage = 0x01;
-	Rid.usUsage = 0x06;
-	Rid.dwFlags = RIDEV_NOLEGACY | RIDEV_INPUTSINK;
-	Rid.hwndTarget = hWnd;
-	return RegisterRawInputDevices(&Rid, 1, sizeof(Rid));
-}
-
-VOID CWindowsWitcherDlg::RawInput(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
-	UINT dwSize;
-
-	GetRawInputData((HRAWINPUT)lParam, RID_INPUT, NULL, &dwSize, sizeof(RAWINPUTHEADER));
-	LPBYTE lpb = new BYTE[dwSize];
-	if (lpb == NULL) {
-		return;
-	}
-
-	if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, lpb, &dwSize,
-		sizeof(RAWINPUTHEADER)) != dwSize)
-		OutputDebugString(TEXT("GetRawInputData does not return correct size !\n"));
-
-	RAWINPUT* raw = (RAWINPUT*)lpb;
-	HandleKeyInput(raw->data.keyboard);
-	delete[] lpb;
-}
-
-BOOL CWindowsWitcherDlg::PreTranslateMessage(MSG* pMsg)
-{
-	if (pMsg->message == WM_INPUT)
-		RawInput(pMsg->hwnd, pMsg->message, pMsg->wParam, pMsg->lParam);
-	return CDialog::PreTranslateMessage(pMsg);
-}
-
-void CWindowsWitcherDlg::OnTimer(UINT_PTR nIDEvent)
-{
-	if (nIDEvent == 0) {
-		for (auto &gp : groups) {
-			auto &windows = gp.second.windows;
-			for (int i = 0; i < (int) windows.size(); i++) {
-				if (!IsWindow(windows[i]->m_hWnd)) {
-					windows.erase(windows.begin() + i);
-					i--;
-				}
-			}
-		}
-
-		auto fw = GetForegroundWindow();
-		if (IsAccepedWindow(fw) && foreground_group != -1 && !foreground_group_windows.empty()) {
-			auto &fgw = foreground_group_windows;
-			for (int i = 0; i < (int) fgw.size() - 1; i++) {
-				if (fgw[i] == fw) {
-					std::swap(fgw[i], fgw[i + 1]);
-				}
-			}
-			if (fgw.back() != fw) {
-				foreground_group = -1;
-				foreground_group_windows.resize(1);
-			}
-		}
-
-		CString cur_text;
-		CString new_text;
-		m_WindowsEdit.GetWindowTextW(cur_text);
-		int key = m_KeysList.GetCurSel() + 100;
-		for (int i = 0; i < (int) groups[key].windows.size(); i++) {
-			CString title;
-			groups[key].windows[i]->GetWindowTextW(title);
-			new_text.Append(title + L"\r\n");
-		}
-		if (cur_text != new_text) {
-			m_WindowsEdit.SetWindowTextW(new_text);
-		}
-	}
-	CDialogEx::OnTimer(nIDEvent);
-}
-
-VOID CWindowsWitcherDlg::PrintMessage(CString msg) {
+template<typename... T>
+VOID CWindowsWitcherDlg::PrintMessage(const CString &format, T&&... args) {
+	CString msg;
+	msg.Format(format, args...);
 	CString str;
-	m_MessageEdit.GetWindowTextW(str);
+	m_MessageEdit.GetWindowText(str);
 	str.Append(msg);
-	m_MessageEdit.SetWindowTextW(str);
+	m_MessageEdit.SetWindowText(str);
 	m_MessageEdit.SetSel(0xFFFFFFF, 0xFFFFFFF);
 }
 
 BOOL CWindowsWitcherDlg::IsAccepedWindow(CWnd* window) {
-	BOOL rv = window && IsWindow(window->m_hWnd) && window->GetWindowTextLengthW() > 0;
+	BOOL rv = window && IsWindow(window->m_hWnd) && window->GetWindowTextLength() > 0;
 	return rv;
+}
+
+DWORD CWindowsWitcherDlg::GetKeyNameCode(LPARAM lParam) {
+	LONG code = lParam & 0x01FF0000;
+	if (code == 0x01360000) // right shift
+		code = 0x00360000;
+	return code;
+}
+
+CString CWindowsWitcherDlg::GetKeyName(LONG keyNameCode) {
+	CString keyName;
+	GetKeyNameText(keyNameCode, keyName.GetBuffer(30), 30);
+	keyName.ReleaseBuffer();
+	return keyName;
+}
+
+CString CWindowsWitcherDlg::GetCustomKeyName(LONG keyNameCode) {
+	return GetKeyName(keyNameCode);
 }
